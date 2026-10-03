@@ -82,8 +82,7 @@ C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /nologo /target:winexe /
 
 **Windows widget**
 <img width="2549" height="1243" alt="Animação" src="https://github.com/user-attachments/assets/54875e05-14c3-4f2c-9233-a6cef069f76f" />
-
-Screenshots:
+----
 <img width="1115" height="630" alt="busy" src="https://github.com/user-attachments/assets/7dec826e-6c0b-4144-9e62-d2b0e740eaee" />  </br>
 <img width="1117" height="629" alt="idle" src="https://github.com/user-attachments/assets/6c068328-5fcc-4382-99f3-e043c6e3c1ab" /> </br>
 <img width="1112" height="631" alt="waiting" src="https://github.com/user-attachments/assets/c8585483-b9aa-40d1-a23c-af90b365ce33" /> </br>
