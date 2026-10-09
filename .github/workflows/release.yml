@@ -1,0 +1,23 @@
+# Push a tag like v1.0.0 to build traffic_light.exe on Windows and attach it to a GitHub release.
+name: release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        shell: pwsh
+        run: |
+          & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:winexe `
+            /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll `
+            /out:traffic_light.exe traffic_light.cs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: traffic_light.exe
+          generate_release_notes: true

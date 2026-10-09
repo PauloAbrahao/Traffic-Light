@@ -65,7 +65,10 @@ class TrafficLight : Form {
   DateTime updated = DateTime.Now; // ultimo evento recebido
   string hot; // botao sob o mouse: "collapse", "expand", "menu", "row3"
   bool dwmCorners, collapsed, uninstalled;
-  readonly ToolTip tip = new ToolTip();
+  DotTip tip; // ToolTip do WinForms nao aparece: o widget nunca fica ativo
+  // recolhido: dica so depois de 1,5s parado na bolinha, senao atrapalha arrastar
+  readonly System.Windows.Forms.Timer hoverTimer = new System.Windows.Forms.Timer { Interval = 1500 };
+  int hoverDot = -1;
   readonly NotifyIcon tray = new NotifyIcon();
   readonly Dictionary<string, Icon> icons = new Dictionary<string, Icon>();
   readonly Dictionary<string, Session> sessions = new Dictionary<string, Session>(); // so mexida na thread da UI
@@ -92,7 +95,10 @@ class TrafficLight : Form {
     SetLanguage(ptbr);
     tray.MouseClick += (s, e) => { if (e.Button == MouseButtons.Left) Visible = !Visible; };
 
+    tip = new DotTip(fSmall);
+    hoverTimer.Tick += (s, e) => ShowDotTip();
     MouseDown += (s, e) => {
+      HoverDot(-1);
       if (e.Button != MouseButtons.Left) return;
       var h = HotAt(e.Location);
       if (h == "collapse" || h == "expand") SetCollapsed(h == "collapse");
@@ -101,8 +107,9 @@ class TrafficLight : Form {
       else { ReleaseCapture(); SendMessage(Handle, 0xA1, 2, 0); } // arrasta pelo widget inteiro (finge que clicou na barra de titulo)
     };
     MouseUp += (s, e) => { if (e.Button == MouseButtons.Right) tray.ContextMenuStrip.Show(Cursor.Position); };
-    MouseMove += (s, e) => SetHot(HotAt(e.Location));
-    MouseLeave += (s, e) => SetHot(null);
+    MouseMove += (s, e) => { SetHot(HotAt(e.Location)); HoverDot(DotAt(e.Location)); };
+    MouseLeave += (s, e) => { SetHot(null); HoverDot(-1); };
+    VisibleChanged += (s, e) => HoverDot(-1);
   }
 
   protected override void OnLoad(EventArgs e) {
@@ -356,6 +363,31 @@ class TrafficLight : Form {
     return null;
   }
 
+  Rectangle DotRect(int i) { return new Rectangle(MINI_PAD + i * MINI_STEP - 3, MINI / 2 - MINI_DOT / 2 - 3, MINI_DOT + 6, MINI_DOT + 6); }
+
+  int DotAt(Point p) {
+    if (!collapsed) return -1;
+    for (int i = 0; i < Math.Max(1, rows.Count); i++) if (DotRect(i).Contains(p)) return i;
+    return -1;
+  }
+
+  // mudou de bolinha (ou saiu): zera a espera e some com a dica
+  void HoverDot(int i) {
+    if (i == hoverDot) return;
+    hoverDot = i;
+    hoverTimer.Stop();
+    tip.Hide();
+    if (i >= 0) hoverTimer.Start();
+  }
+
+  void ShowDotTip() {
+    hoverTimer.Stop();
+    if (!collapsed || hoverDot < 0) return;
+    var text = hoverDot < rows.Count ? Folder(rows[hoverDot]) + "  " + T[rows[hoverDot].State][0] : None;
+    var below = PointToScreen(new Point(DotRect(hoverDot).Left, MINI + 6));
+    tip.ShowAt(text, below, Top - 6); // sem espaco embaixo, abre em cima
+  }
+
   void SetHot(string h) {
     if (h == hot) return;
     hot = h;
@@ -379,6 +411,7 @@ class TrafficLight : Form {
     collapsed = c;
     try { using (var k = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(REG)) k.SetValue("Collapsed", c ? 1 : 0); } catch { }
     hot = null;
+    HoverDot(-1);
     Cursor = Cursors.Default;
     Fit();
     Location = new Point(topRight.X - Width, topRight.Y);
@@ -388,8 +421,6 @@ class TrafficLight : Form {
   }
 
   void Fit() {
-    // recolhido: dica com a lista, ja que so sobram as bolinhas
-    tip.SetToolTip(this, !collapsed ? null : rows.Count == 0 ? None : string.Join("\n", rows.Select(r => Folder(r) + "  " + T[r.State][0])));
     if (collapsed) { ClientSize = new Size(MINI_PAD + Math.Max(1, rows.Count) * MINI_STEP - (MINI_STEP - MINI_DOT) + 8 + BTN + MINI_PAD - 4, MINI); return; }
     int rowW = rows.Count == 0
       ? PAD + Measure(None, fName) + PAD
@@ -691,6 +722,44 @@ class TrafficLight : Form {
       }
     }
     sb.Append('"');
+  }
+
+  // dica escura que aparece sem roubar o foco de quem esta digitando
+  class DotTip : Form {
+    string text = "";
+    public DotTip(Font f) {
+      FormBorderStyle = FormBorderStyle.None;
+      ShowInTaskbar = false;
+      StartPosition = FormStartPosition.Manual;
+      TopMost = true;
+      DoubleBuffered = true;
+      BackColor = HOVER;
+      Font = f;
+    }
+    protected override bool ShowWithoutActivation { get { return true; } }
+    protected override CreateParams CreateParams {
+      get { var cp = base.CreateParams; cp.ExStyle |= 0x80 | 0x8 | 0x08000000; return cp; } // TOOLWINDOW | TOPMOST | NOACTIVATE
+    }
+    protected override void OnHandleCreated(EventArgs e) {
+      base.OnHandleCreated(e);
+      try {
+        int round = 3, border = BORDER.R | BORDER.G << 8 | BORDER.B << 16; // ROUNDSMALL
+        DwmSetWindowAttribute(Handle, 33, ref round, 4);
+        DwmSetWindowAttribute(Handle, 34, ref border, 4);
+      } catch { }
+    }
+    public void ShowAt(string t, Point below, int aboveBottom) {
+      text = t;
+      var sz = TextRenderer.MeasureText(t, Font, Size.Empty, TextFormatFlags.NoPadding);
+      ClientSize = new Size(sz.Width + 20, sz.Height + 12);
+      var area = Screen.FromPoint(below).WorkingArea;
+      Location = new Point(Math.Max(area.Left, Math.Min(below.X, area.Right - Width)), below.Y + Height <= area.Bottom ? below.Y : aboveBottom - Height);
+      if (!Visible) Show();
+      Invalidate();
+    }
+    protected override void OnPaint(PaintEventArgs e) {
+      TextRenderer.DrawText(e.Graphics, text, Font, ClientRectangle, TEXT, TextFormatFlags.NoPadding | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+    }
   }
 
   class DarkMenu : ProfessionalColorTable {
