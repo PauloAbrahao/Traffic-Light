@@ -37,7 +37,7 @@ Double-click it. You can copy just the `.exe` to any folder or Windows machine (
 
 - **Hook installation:** on startup it checks `~/.claude/settings.json`. If any hook is missing, it shows what's missing and asks to install it (without removing your hooks; it backs up to `settings.json.bak`). Afterwards, restart any open Claude Code sessions.
 - **Tray icon:** color of whoever needs you most (yellow > red > green; gray = no sessions). Hover to see the summary.
-- **Widget:** always on top. Starts in the bottom-right corner; drag to move and it remembers the spot. Each row shows how long the session has been in its state; `···` copies the path or removes the row, `–` collapses it to a small bar with one colored dot per session (hover for the list, `⌄` expands it again), the sliders icon opens the menu (also where you switch between English and Português; the choice is saved and overrides `--ptbr`).
+- **Widget:** always on top. Starts in the bottom-right corner; drag to move and it remembers the spot. `···` copies the path or removes the row, `–` collapses it to a small bar with one colored dot per session (hover for the list, `⌄` expands it again), the sliders icon opens the menu (also where you switch between English and Português; the choice is saved and overrides `--ptbr`).
 - **Menu** (right-click the icon or the widget): show/hide widget, **verify installation**, **uninstall**, language, exit.
 - **Uninstall:** removes only the traffic light hooks from `~/.claude/settings.json` (your other hooks stay; backup in `settings.json.bak`), clears its saved settings (position, language, collapsed) and closes. Then delete `traffic_light.exe`. A single click on the icon shows/hides the widget.
 

@@ -114,7 +114,7 @@ class TrafficLight : Form {
     new Thread(Serve) { IsBackground = true }.Start();
     // Esc nao dispara hook nenhum, mas o Claude Code grava a interrupcao no transcript na hora
     var timer = new System.Windows.Forms.Timer { Interval = 1000 }; // ponytail: polling de 1s, FileSystemWatcher se precisar ser instantaneo
-    timer.Tick += (s, ev) => { CheckTranscripts(); KeepOnTop(); if (Visible) Invalidate(); }; // tempos correm a cada 1s
+    timer.Tick += (s, ev) => { CheckTranscripts(); KeepOnTop(); if (Visible) Invalidate(); }; // "Atualizado ha" anda a cada 1s
     timer.Start();
     // so reposiciona quando a tela muda: checar a cada 1s brigava com o arraste (DPI misto, taskbar) e prendia no canto
     Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplayChanged;
@@ -316,7 +316,7 @@ class TrafficLight : Form {
 
   // ---------- widget ----------
 
-  const string TITLE = "TRAFFIC LIGHT";
+  string Title { get { return L("AGENT MONITOR", "MONITOR DE AGENTES"); } }
   const TextFormatFlags LEFT = TextFormatFlags.NoPadding | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis;
   const TextFormatFlags RIGHT = TextFormatFlags.NoPadding | TextFormatFlags.VerticalCenter | TextFormatFlags.Right;
 
@@ -334,10 +334,6 @@ class TrafficLight : Form {
     if (d.TotalSeconds < 60) return L("Updated " + (int)d.TotalSeconds + "s ago", "Atualizado há " + (int)d.TotalSeconds + "s");
     if (d.TotalMinutes < 60) return L("Updated " + (int)d.TotalMinutes + " min ago", "Atualizado há " + (int)d.TotalMinutes + " min");
     return L("Updated " + (int)d.TotalHours + " h ago", "Atualizado há " + (int)d.TotalHours + " h");
-  }
-  static string Elapsed(Session s) {
-    var d = DateTime.Now - s.At;
-    return string.Format("{0:00}:{1:00}:{2:00}", (int)d.TotalHours, d.Minutes, d.Seconds);
   }
 
   static int Measure(string t, Font f) { return TextRenderer.MeasureText(t, f, Size.Empty, TextFormatFlags.NoPadding).Width; }
@@ -395,11 +391,10 @@ class TrafficLight : Form {
     // recolhido: dica com a lista, ja que so sobram as bolinhas
     tip.SetToolTip(this, !collapsed ? null : rows.Count == 0 ? None : string.Join("\n", rows.Select(r => Folder(r) + "  " + T[r.State][0])));
     if (collapsed) { ClientSize = new Size(MINI_PAD + Math.Max(1, rows.Count) * MINI_STEP - (MINI_STEP - MINI_DOT) + 8 + BTN + MINI_PAD - 4, MINI); return; }
-    int timeW = Measure("00:00:00", fSmall);
     int rowW = rows.Count == 0
       ? PAD + Measure(None, fName) + PAD
-      : PAD + 16 + MaxWidth(Folder, fName) + 24 + rows.Max(r => BadgeWidth(r)) + 12 + timeW + 8 + BTN + PAD;
-    int headW = PAD + 26 + Measure(TITLE, fTitle) + 24 + Measure(Count(), fSmall) + 12 + BTN * 2 + 4 + PAD;
+      : PAD + 16 + MaxWidth(Folder, fName) + 24 + rows.Max(r => BadgeWidth(r)) + 8 + BTN + PAD;
+    int headW = PAD + 26 + Measure(Title, fTitle) + 24 + Measure(Count(), fSmall) + 12 + BTN * 2 + 4 + PAD;
     int footW = PAD + Measure(Summary(), fSmall) + 24 + Measure(L("Updated 59 min ago", "Atualizado há 59 min"), fSmall) + PAD;
     ClientSize = new Size(Math.Max(360, Math.Max(rowW, Math.Max(headW, footW))), FootTop + FOOT);
   }
@@ -468,7 +463,7 @@ class TrafficLight : Form {
         using (var path = RoundRect(new RectangleF(PAD + 0.5f, cy - 7, 14, 14), 3)) g.DrawPath(accent, path);
         g.DrawLines(accent, new[] { new PointF(PAD + 3.5f, cy + 3), new PointF(PAD + 6, cy), new PointF(PAD + 8.5f, cy + 2), new PointF(PAD + 11.5f, cy - 3) });
       }
-      TextRenderer.DrawText(g, TITLE, fTitle, new Rectangle(PAD + 26, 0, w, HEAD), Color.White, LEFT);
+      TextRenderer.DrawText(g, Title, fTitle, new Rectangle(PAD + 26, 0, w, HEAD), Color.White, LEFT);
       var hide = CollapseRect;
       TextRenderer.DrawText(g, Count(), fSmall, new Rectangle(0, 0, hide.Left - 8, HEAD), MUTED, RIGHT);
       HoverBg(g, "collapse", hide);
@@ -486,19 +481,17 @@ class TrafficLight : Form {
 
       // sessoes: ponto, pasta, badge, tempo no estado, menu da linha
       if (rows.Count == 0) TextRenderer.DrawText(g, None, fName, new Rectangle(PAD, RowTop(0), w, ROW), MUTED, LEFT);
-      int timeW = Measure("00:00:00", fSmall);
       for (int i = 0; i < rows.Count; i++) {
         var r = rows[i];
         var color = COLORS[r.State];
         int top = RowTop(i), mid = top + ROW / 2;
         var dots = RowMenuRect(i);
-        int timeX = dots.Left - 6 - timeW, badgeW = BadgeWidth(r), badgeX = timeX - 12 - badgeW;
+        int badgeW = BadgeWidth(r), badgeX = dots.Left - 8 - badgeW;
         using (var b = new SolidBrush(Mix(color, BG, 0.45))) g.FillEllipse(b, PAD + 1, mid - 3, 6, 6);
         TextRenderer.DrawText(g, Folder(r), fName, new Rectangle(PAD + 16, top, badgeX - PAD - 16 - 12, ROW), TEXT, LEFT);
         var badge = new Rectangle(badgeX, mid - BADGE / 2, badgeW, BADGE);
         Fill(g, Mix(color, BG, 0.16), badge, 6);
         TextRenderer.DrawText(g, T[r.State][0], fBadge, badge, color, TextFormatFlags.NoPadding | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
-        TextRenderer.DrawText(g, Elapsed(r), fSmall, new Rectangle(timeX, top, timeW, ROW), MUTED, RIGHT);
         HoverBg(g, "row" + i, dots);
         using (var b = new SolidBrush(MUTED)) for (int k = -1; k <= 1; k++) g.FillEllipse(b, dots.Left + BTN / 2 + k * 5 - 1.5f, mid - 1.5f, 3, 3);
       }
