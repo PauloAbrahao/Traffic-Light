@@ -1,5 +1,5 @@
 // traffic_light.exe: semaforo do Claude Code autossuficiente (sem node). Icone na bandeja + widget flutuante.
-//   traffic_light.exe [--ptbr]
+//   traffic_light.exe [--ptbr]   (o idioma escolhido no menu fica salvo e vale sobre a flag)
 // Recebe os hooks HTTP em 127.0.0.1:4545 (mesma logica do traffic_light.js), confere os hooks no
 // ~/.claude/settings.json ao abrir e oferece instalar o que faltar.
 // Gerar: C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /nologo /target:winexe /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll /out:traffic_light.exe traffic_light.cs
@@ -21,14 +21,15 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
 class Session {
-  public string State, Cwd, Transcript;
+  public string Id, State, Cwd, Transcript;
   public long Offset;
   public DateTime At; // ultima mudanca de estado
 }
 
 class TrafficLight : Form {
   const int PORT = 4545;
-  const int PAD = 8, ROW = 22, DOT = 12;
+  const int PAD = 16, HEAD = 48, ROW = 36, FOOT = 44, BADGE = 22, BTN = 22;
+  const int MINI = 36, MINI_PAD = 12, MINI_DOT = 10, MINI_STEP = 16; // recolhido: so as bolinhas
   static readonly Dictionary<string, string> STATE = new Dictionary<string, string> {
     { "SessionStart", "idle" },
     { "UserPromptSubmit", "busy" },
@@ -47,15 +48,24 @@ class TrafficLight : Form {
     { "waiting", Color.FromArgb(0xf9, 0xf1, 0xa5) }, { "busy", Color.FromArgb(0xe7, 0x48, 0x56) },
     { "idle", Color.FromArgb(0x16, 0xc6, 0x0c) }, { "none", Color.Gray },
   };
+  static readonly Color BG = Color.FromArgb(0x18, 0x19, 0x1d), BORDER = Color.FromArgb(0x34, 0x35, 0x3a), LINE = Color.FromArgb(0x2c, 0x2d, 0x32),
+    HOVER = Color.FromArgb(0x26, 0x27, 0x2c), TEXT = Color.FromArgb(0xe6, 0xe7, 0xea), MUTED = Color.FromArgb(0x8a, 0x8d, 0x93), ACCENT = Color.FromArgb(0x8b, 0x9c, 0xf7);
   static readonly string SETTINGS = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "settings.json");
   static readonly Regex OUR_URL = new Regex(@"^http://(127\.0\.0\.1|localhost):" + PORT + "/?$");
 
   [DllImport("user32.dll")] static extern bool ReleaseCapture();
   [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr h, int msg, int w, int l);
+  [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+  [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr h, int attr, ref int value, int size);
 
-  readonly bool ptbr;
-  readonly CultureInfo culture;
-  readonly Dictionary<string, string[]> T; // estado -> [rotulo, plural]
+  bool ptbr;
+  Dictionary<string, string[]> T; // estado -> [rotulo, singular, plural]
+  readonly Font fTitle = new Font("Segoe UI Semibold", 11), fName = new Font("Segoe UI", 10.5f), fBadge = new Font("Segoe UI Semibold", 8.5f), fSmall = new Font("Segoe UI", 9);
+  readonly ContextMenuStrip rowMenu = new ContextMenuStrip();
+  DateTime updated = DateTime.Now; // ultimo evento recebido
+  string hot; // botao sob o mouse: "collapse", "expand", "menu", "row3"
+  bool dwmCorners, collapsed, uninstalled;
+  readonly ToolTip tip = new ToolTip();
   readonly NotifyIcon tray = new NotifyIcon();
   readonly Dictionary<string, Icon> icons = new Dictionary<string, Icon>();
   readonly Dictionary<string, Session> sessions = new Dictionary<string, Session>(); // so mexida na thread da UI
@@ -67,45 +77,118 @@ class TrafficLight : Form {
   static string Str(IDictionary<string, object> d, string k) { object v; return d != null && d.TryGetValue(k, out v) ? v as string : null; }
 
   TrafficLight(bool ptbr) {
-    this.ptbr = ptbr;
-    culture = new CultureInfo(ptbr ? "pt-BR" : "en-US");
-    T = ptbr
-      ? new Dictionary<string, string[]> { { "waiting", new[] { "AGUARDANDO VOCE", "aguardando" } }, { "busy", new[] { "ATIVO", "ativos" } }, { "idle", new[] { "LIVRE", "livres" } } }
-      : new Dictionary<string, string[]> { { "waiting", new[] { "WAITING FOR YOU", "waiting" } }, { "busy", new[] { "BUSY", "busy" } }, { "idle", new[] { "IDLE", "idle" } } };
     FormBorderStyle = FormBorderStyle.None;
     TopMost = true;
     ShowInTaskbar = false;
     DoubleBuffered = true;
     StartPosition = FormStartPosition.Manual;
-    BackColor = Color.FromArgb(12, 12, 12);
-    Font = new Font("Consolas", 10);
-    Opacity = 0.92;
+    BackColor = BG;
+    Font = fName;
 
     foreach (var kv in COLORS) icons[kv.Key] = DotIcon(kv.Value);
     tray.Icon = icons["none"];
-    tray.ContextMenuStrip = new ContextMenuStrip();
-    tray.ContextMenuStrip.Items.Add(L("Show/hide widget", "Mostrar/ocultar widget"), null, (s, e) => Visible = !Visible);
-    tray.ContextMenuStrip.Items.Add(L("Check installation", "Verificar instalação"), null, (s, e) => CheckInstall(false));
-    tray.ContextMenuStrip.Items.Add(L("Exit", "Sair"), null, (s, e) => Close());
+    tray.ContextMenuStrip = new ContextMenuStrip { Renderer = new ToolStripProfessionalRenderer(new DarkMenu()) };
+    rowMenu.Renderer = tray.ContextMenuStrip.Renderer;
+    SetLanguage(ptbr);
     tray.MouseClick += (s, e) => { if (e.Button == MouseButtons.Left) Visible = !Visible; };
 
-    // arrasta pelo widget inteiro (finge que clicou na barra de titulo)
-    MouseDown += (s, e) => { if (e.Button == MouseButtons.Left) { ReleaseCapture(); SendMessage(Handle, 0xA1, 2, 0); } };
+    MouseDown += (s, e) => {
+      if (e.Button != MouseButtons.Left) return;
+      var h = HotAt(e.Location);
+      if (h == "collapse" || h == "expand") SetCollapsed(h == "collapse");
+      else if (h == "menu") tray.ContextMenuStrip.Show(this, new Point(MenuRect.Left, MenuRect.Bottom + 4));
+      else if (h != null) ShowRowMenu(int.Parse(h.Substring(3)));
+      else { ReleaseCapture(); SendMessage(Handle, 0xA1, 2, 0); } // arrasta pelo widget inteiro (finge que clicou na barra de titulo)
+    };
     MouseUp += (s, e) => { if (e.Button == MouseButtons.Right) tray.ContextMenuStrip.Show(Cursor.Position); };
+    MouseMove += (s, e) => SetHot(HotAt(e.Location));
+    MouseLeave += (s, e) => SetHot(null);
   }
 
   protected override void OnLoad(EventArgs e) {
     base.OnLoad(e);
+    try { using (var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(REG)) collapsed = k != null && k.GetValue("Collapsed") as int? == 1; } catch { }
     Refresh2();
-    var area = Screen.PrimaryScreen.WorkingArea; // canto de baixo, a direita
-    Location = new Point(area.Right - Width - 16, area.Bottom - Height - 16);
+    RestorePosition();
     tray.Visible = true;
     new Thread(Serve) { IsBackground = true }.Start();
     // Esc nao dispara hook nenhum, mas o Claude Code grava a interrupcao no transcript na hora
     var timer = new System.Windows.Forms.Timer { Interval = 1000 }; // ponytail: polling de 1s, FileSystemWatcher se precisar ser instantaneo
-    timer.Tick += (s, ev) => CheckTranscripts();
+    timer.Tick += (s, ev) => { CheckTranscripts(); KeepOnTop(); if (Visible) Invalidate(); }; // tempos correm a cada 1s
     timer.Start();
+    // so reposiciona quando a tela muda: checar a cada 1s brigava com o arraste (DPI misto, taskbar) e prendia no canto
+    Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplayChanged;
+    ResizeEnd += (s, ev) => SavePosition(); // dispara no fim do arraste tambem
     BeginInvoke((Action)(() => CheckInstall(true)));
+  }
+
+  const string REG = @"Software\TrafficLight";
+
+  // idioma escolhido no menu: null = nunca escolhido, vale a flag --ptbr
+  static bool? SavedLanguage() {
+    try { using (var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(REG)) { var v = k == null ? null : k.GetValue("Language") as string; return v == null ? (bool?)null : v == "pt-BR"; } } catch { return null; }
+  }
+
+  void SetLanguage(bool pt) {
+    ptbr = pt;
+    T = ptbr
+      ? new Dictionary<string, string[]> { { "waiting", new[] { "AGUARDANDO", "alerta", "alertas" } }, { "busy", new[] { "ATIVO", "ativo", "ativos" } }, { "idle", new[] { "OCIOSO", "ocioso", "ociosos" } } }
+      : new Dictionary<string, string[]> { { "waiting", new[] { "NEEDS INPUT", "alert", "alerts" } }, { "busy", new[] { "WORKING", "working", "working" } }, { "idle", new[] { "IDLE", "idle", "idle" } } };
+    var items = tray.ContextMenuStrip.Items;
+    items.Clear();
+    items.Add(L("Show/hide widget", "Mostrar/ocultar widget"), null, (s, e) => Visible = !Visible);
+    items.Add(L("Check installation", "Verificar instalação"), null, (s, e) => CheckInstall(false));
+    items.Add(L("Uninstall (remove hooks)", "Desinstalar (remover hooks)"), null, (s, e) => Uninstall());
+    items.Add(new ToolStripSeparator());
+    // check desenhado no texto: o glifo do ToolStrip some no fundo escuro
+    items.Add((ptbr ? "    " : "✓  ") + "English", null, (s, e) => ChooseLanguage(false));
+    items.Add((ptbr ? "✓  " : "    ") + "Português", null, (s, e) => ChooseLanguage(true));
+    items.Add(new ToolStripSeparator());
+    items.Add(L("Exit", "Sair"), null, (s, e) => Close());
+    foreach (ToolStripItem it in items) it.ForeColor = TEXT;
+  }
+
+  void ChooseLanguage(bool pt) {
+    try { using (var k = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(REG)) k.SetValue("Language", pt ? "pt-BR" : "en-US"); } catch { }
+    if (pt == ptbr) return;
+    SetLanguage(pt);
+    Refresh2(); // textos mudam de largura
+  }
+
+  // posicao guardada pelo canto de baixo/direita: o widget cresce pra cima e pra esquerda
+  void RestorePosition() {
+    object x = null, y = null;
+    try { using (var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(REG)) if (k != null) { x = k.GetValue("Right"); y = k.GetValue("Bottom"); } } catch { }
+    if (x is int && y is int) Location = new Point((int)x - Width, (int)y - Height);
+    else {
+      var area = Screen.PrimaryScreen.WorkingArea; // primeira vez: canto de baixo, a direita
+      Location = new Point(area.Right - Width - 16, area.Bottom - Height - 16);
+    }
+    KeepInside();
+  }
+
+  void SavePosition() {
+    try { using (var k = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(REG)) { k.SetValue("Right", Right); k.SetValue("Bottom", Bottom); } } catch { }
+  }
+
+  // monitor desconectado / resolucao mudando pode deixar a janela fora da tela:
+  // empurra so o necessario pra dentro do monitor mais proximo, sem mandar pro canto
+  void KeepInside() {
+    var area = Screen.FromRectangle(Bounds).WorkingArea;
+    int x = Math.Max(area.Left, Math.Min(Left, area.Right - Width));
+    int y = Math.Max(area.Top, Math.Min(Top, area.Bottom - Height));
+    if (x != Left || y != Top) Location = new Point(x, y);
+  }
+
+  void OnDisplayChanged(object sender, EventArgs e) {
+    BeginInvoke((Action)KeepInside);
+  }
+
+  // o Windows perde o "sempre no topo" (Explorer reiniciando, tela cheia, RDP).
+  // TopMost = true nao reaplica se ja for true, entao vai direto no SetWindowPos.
+  void KeepOnTop() {
+    if (!Visible) return;
+    SetWindowPos(Handle, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010); // HWND_TOPMOST; NOSIZE | NOMOVE | NOACTIVATE
   }
 
   // ---------- servidor HTTP (so o minimo que os hooks usam) ----------
@@ -169,6 +252,7 @@ class TrafficLight : Form {
     var id = Str(e, "session_id");
     var name = Str(e, "hook_event_name") ?? "";
     if (id == null) return;
+    updated = DateTime.Now;
     if (name == "SessionEnd") { sessions.Remove(id); Refresh2(); return; }
     // idle_prompt = ociosa ha ~60s; rede de seguranca caso a deteccao pelo transcript falhe
     string state;
@@ -176,7 +260,7 @@ class TrafficLight : Form {
     else if (!STATE.TryGetValue(name, out state)) return;
     Session s;
     if (!sessions.TryGetValue(id, out s)) {
-      s = new Session { Transcript = Str(e, "transcript_path") };
+      s = new Session { Id = id, Transcript = Str(e, "transcript_path") };
       try { s.Offset = new FileInfo(s.Transcript).Length; } catch { s.Transcript = null; }
       sessions[id] = s;
     }
@@ -208,7 +292,7 @@ class TrafficLight : Form {
               if (Str(m, "type") != "user" || !m.TryGetValue("message", out msg) || !((IDictionary<string, object>)msg).TryGetValue("content", out content)) continue;
               var list = content as ArrayList;
               var text = content as string ?? (list != null && list.Count > 0 ? Str(list[0] as Dictionary<string, object>, "text") : null);
-              if (text != null && text.StartsWith("[Request interrupted by user")) { s.State = "idle"; s.At = DateTime.Now; changed = true; }
+              if (text != null && text.StartsWith("[Request interrupted by user")) { s.State = "idle"; s.At = updated = DateTime.Now; changed = true; }
             } catch { }
           }
         }
@@ -222,7 +306,7 @@ class TrafficLight : Form {
   void Refresh2() {
     rows = sessions.Values.OrderBy(s => Array.IndexOf(ORDER, s.State)).ThenBy(s => Folder(s), StringComparer.CurrentCultureIgnoreCase).ToList();
     tray.Icon = icons[ORDER.FirstOrDefault(st => rows.Any(r => r.State == st)) ?? "none"];
-    var text = string.Join(" · ", ORDER.Select(st => rows.Count(r => r.State == st) + " " + T[st][1]));
+    var text = Summary();
     tray.Text = text.Length > 63 ? text.Substring(0, 63) : text; // limite do Windows
     var corner = new Point(Right, Bottom);
     Fit();
@@ -232,30 +316,198 @@ class TrafficLight : Form {
 
   // ---------- widget ----------
 
-  string None { get { return L("no sessions", "nenhuma sessao"); } }
-  string Time(Session s) { return s.At.ToString("T", culture); }
-  int MaxWidth(Func<Session, string> text) { return rows.Count == 0 ? 0 : rows.Max(r => TextRenderer.MeasureText(text(r), Font).Width); }
+  const string TITLE = "TRAFFIC LIGHT";
+  const TextFormatFlags LEFT = TextFormatFlags.NoPadding | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis;
+  const TextFormatFlags RIGHT = TextFormatFlags.NoPadding | TextFormatFlags.VerticalCenter | TextFormatFlags.Right;
+
+  string None { get { return L("no sessions", "nenhuma sessão"); } }
+  string Count() { return rows.Count + (rows.Count == 1 ? L(" session", " sessão") : L(" sessions", " sessões")); }
+  string Summary() {
+    return string.Join(" · ", new[] { "busy", "idle", "waiting" }.Select(st => {
+      int n = rows.Count(r => r.State == st);
+      return n + " " + T[st][n == 1 ? 1 : 2];
+    }));
+  }
+  string Updated() {
+    var d = DateTime.Now - updated;
+    if (d.TotalSeconds < 10) return L("Updated just now", "Atualizado agora");
+    if (d.TotalSeconds < 60) return L("Updated " + (int)d.TotalSeconds + "s ago", "Atualizado há " + (int)d.TotalSeconds + "s");
+    if (d.TotalMinutes < 60) return L("Updated " + (int)d.TotalMinutes + " min ago", "Atualizado há " + (int)d.TotalMinutes + " min");
+    return L("Updated " + (int)d.TotalHours + " h ago", "Atualizado há " + (int)d.TotalHours + " h");
+  }
+  static string Elapsed(Session s) {
+    var d = DateTime.Now - s.At;
+    return string.Format("{0:00}:{1:00}:{2:00}", (int)d.TotalHours, d.Minutes, d.Seconds);
+  }
+
+  static int Measure(string t, Font f) { return TextRenderer.MeasureText(t, f, Size.Empty, TextFormatFlags.NoPadding).Width; }
+  int MaxWidth(Func<Session, string> text, Font f) { return rows.Count == 0 ? 0 : rows.Max(r => Measure(text(r), f)); }
+  int BadgeWidth(Session r) { return Measure(T[r.State][0], fBadge) + 20; }
+  static Color Mix(Color a, Color b, double t) { return Color.FromArgb((int)(a.R * t + b.R * (1 - t)), (int)(a.G * t + b.G * (1 - t)), (int)(a.B * t + b.B * (1 - t))); }
+
+  int RowTop(int i) { return HEAD + 8 + i * ROW; }
+  int FootTop { get { return RowTop(Math.Max(1, rows.Count)) + 8; } }
+  Rectangle MenuRect { get { return new Rectangle(ClientSize.Width - PAD - BTN + 4, (HEAD - BTN) / 2, BTN, BTN); } }
+  Rectangle CollapseRect { get { var r = MenuRect; r.Offset(-BTN - 4, 0); return r; } }
+  Rectangle ExpandRect { get { return new Rectangle(ClientSize.Width - MINI_PAD - BTN + 4, (MINI - BTN) / 2, BTN, BTN); } }
+  Rectangle RowMenuRect(int i) { return new Rectangle(ClientSize.Width - PAD - BTN + 4, RowTop(i) + (ROW - BTN) / 2, BTN, BTN); }
+
+  string HotAt(Point p) {
+    if (collapsed) return ExpandRect.Contains(p) ? "expand" : null;
+    if (MenuRect.Contains(p)) return "menu";
+    if (CollapseRect.Contains(p)) return "collapse";
+    for (int i = 0; i < rows.Count; i++) if (RowMenuRect(i).Contains(p)) return "row" + i;
+    return null;
+  }
+
+  void SetHot(string h) {
+    if (h == hot) return;
+    hot = h;
+    Cursor = h == null ? Cursors.Default : Cursors.Hand;
+    Invalidate();
+  }
+
+  void ShowRowMenu(int i) {
+    var s = rows[i];
+    rowMenu.Items.Clear();
+    rowMenu.Items.Add(L("Copy path", "Copiar caminho"), null, (o, e) => { try { Clipboard.SetText(s.Cwd); } catch { } });
+    rowMenu.Items.Add(L("Remove from list", "Remover da lista"), null, (o, e) => { sessions.Remove(s.Id); Refresh2(); });
+    foreach (ToolStripItem it in rowMenu.Items) it.ForeColor = TEXT;
+    var r = RowMenuRect(i);
+    rowMenu.Show(this, new Point(r.Left, r.Bottom + 4));
+  }
+
+  // recolhe/expande como lista suspensa: o canto de cima a direita fica parado
+  void SetCollapsed(bool c) {
+    var topRight = new Point(Right, Top);
+    collapsed = c;
+    try { using (var k = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(REG)) k.SetValue("Collapsed", c ? 1 : 0); } catch { }
+    hot = null;
+    Cursor = Cursors.Default;
+    Fit();
+    Location = new Point(topRight.X - Width, topRight.Y);
+    KeepInside();
+    SavePosition();
+    Invalidate();
+  }
 
   void Fit() {
-    int w = rows.Count == 0
-      ? TextRenderer.MeasureText(None, Font).Width
-      : DOT + 6 + MaxWidth(Folder) + 12 + MaxWidth(r => T[r.State][0]) + 12 + MaxWidth(Time);
-    ClientSize = new Size(Math.Max(140, w + PAD * 2), PAD * 2 + Math.Max(1, rows.Count) * ROW - 6);
+    // recolhido: dica com a lista, ja que so sobram as bolinhas
+    tip.SetToolTip(this, !collapsed ? null : rows.Count == 0 ? None : string.Join("\n", rows.Select(r => Folder(r) + "  " + T[r.State][0])));
+    if (collapsed) { ClientSize = new Size(MINI_PAD + Math.Max(1, rows.Count) * MINI_STEP - (MINI_STEP - MINI_DOT) + 8 + BTN + MINI_PAD - 4, MINI); return; }
+    int timeW = Measure("00:00:00", fSmall);
+    int rowW = rows.Count == 0
+      ? PAD + Measure(None, fName) + PAD
+      : PAD + 16 + MaxWidth(Folder, fName) + 24 + rows.Max(r => BadgeWidth(r)) + 12 + timeW + 8 + BTN + PAD;
+    int headW = PAD + 26 + Measure(TITLE, fTitle) + 24 + Measure(Count(), fSmall) + 12 + BTN * 2 + 4 + PAD;
+    int footW = PAD + Measure(Summary(), fSmall) + 24 + Measure(L("Updated 59 min ago", "Atualizado há 59 min"), fSmall) + PAD;
+    ClientSize = new Size(Math.Max(360, Math.Max(rowW, Math.Max(headW, footW))), FootTop + FOOT);
   }
+
+  // Windows 11 arredonda e pinta a borda pelo DWM; no 10 cai pra Region (sem antialias)
+  protected override void OnHandleCreated(EventArgs e) {
+    base.OnHandleCreated(e);
+    try {
+      int round = 2, border = BORDER.R | BORDER.G << 8 | BORDER.B << 16;
+      dwmCorners = DwmSetWindowAttribute(Handle, 33, ref round, 4) == 0; // DWMWA_WINDOW_CORNER_PREFERENCE = ROUND
+      if (dwmCorners) DwmSetWindowAttribute(Handle, 34, ref border, 4);  // DWMWA_BORDER_COLOR
+    } catch { }
+    UpdateShape();
+  }
+
+  protected override void OnResize(EventArgs e) { base.OnResize(e); UpdateShape(); }
+
+  // OnResize roda durante a criacao do handle, antes do dwmCorners: com DWM, limpa a Region que tenha ficado
+  void UpdateShape() {
+    if (!IsHandleCreated) return;
+    var old = Region;
+    if (dwmCorners) { if (old == null) return; Region = null; }
+    else using (var path = RoundRect(new RectangleF(0, 0, Width, Height), 10)) Region = new Region(path);
+    if (old != null) old.Dispose();
+  }
+
+  static GraphicsPath RoundRect(RectangleF r, float rad) {
+    var p = new GraphicsPath();
+    float d = rad * 2;
+    p.AddArc(r.X, r.Y, d, d, 180, 90);
+    p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+    p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+    p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+    p.CloseFigure();
+    return p;
+  }
+
+  static void Fill(Graphics g, Color c, RectangleF r, float rad) {
+    using (var b = new SolidBrush(c)) using (var p = RoundRect(r, rad)) g.FillPath(b, p);
+  }
+
+  void HoverBg(Graphics g, string id, Rectangle r) { if (hot == id) Fill(g, HOVER, r, 6); }
 
   protected override void OnPaint(PaintEventArgs e) {
     var g = e.Graphics;
     g.SmoothingMode = SmoothingMode.AntiAlias;
-    if (rows.Count == 0) { TextRenderer.DrawText(g, None, Font, new Point(PAD, PAD), Color.Gray); return; }
-    int nameW = MaxWidth(Folder), labelW = MaxWidth(r => T[r.State][0]);
-    for (int i = 0; i < rows.Count; i++) {
-      var r = rows[i];
-      int y = PAD + i * ROW;
-      var color = COLORS[r.State];
-      using (var b = new SolidBrush(color)) g.FillEllipse(b, PAD, y + 2, DOT, DOT);
-      TextRenderer.DrawText(g, Folder(r), Font, new Point(PAD + DOT + 6, y), Color.Gainsboro);
-      TextRenderer.DrawText(g, T[r.State][0], Font, new Point(PAD + DOT + 6 + nameW + 12, y), color);
-      TextRenderer.DrawText(g, Time(r), Font, new Point(PAD + DOT + 6 + nameW + 12 + labelW + 12, y), Color.Gray);
+    int w = ClientSize.Width;
+    using (var muted = new Pen(MUTED, 1.5f)) using (var line = new Pen(LINE)) {
+      if (!dwmCorners) using (var p = new Pen(BORDER)) using (var path = RoundRect(new RectangleF(0.5f, 0.5f, w - 1, ClientSize.Height - 1), 10)) g.DrawPath(p, path);
+
+      if (collapsed) {
+        int my = MINI / 2;
+        if (rows.Count == 0) using (var b = new SolidBrush(Mix(MUTED, BG, 0.5))) g.FillEllipse(b, MINI_PAD, my - MINI_DOT / 2, MINI_DOT, MINI_DOT);
+        for (int i = 0; i < rows.Count; i++)
+          using (var b = new SolidBrush(COLORS[rows[i].State])) g.FillEllipse(b, MINI_PAD + i * MINI_STEP, my - MINI_DOT / 2, MINI_DOT, MINI_DOT);
+        var ex = ExpandRect;
+        HoverBg(g, "expand", ex);
+        int ecx = ex.Left + BTN / 2;
+        g.DrawLines(muted, new[] { new PointF(ecx - 4, my - 2), new PointF(ecx, my + 2), new PointF(ecx + 4, my - 2) });
+        return;
+      }
+
+      // cabecalho: icone + titulo, contagem, ocultar, menu
+      int cy = HEAD / 2;
+      using (var accent = new Pen(ACCENT, 1.5f)) {
+        using (var path = RoundRect(new RectangleF(PAD + 0.5f, cy - 7, 14, 14), 3)) g.DrawPath(accent, path);
+        g.DrawLines(accent, new[] { new PointF(PAD + 3.5f, cy + 3), new PointF(PAD + 6, cy), new PointF(PAD + 8.5f, cy + 2), new PointF(PAD + 11.5f, cy - 3) });
+      }
+      TextRenderer.DrawText(g, TITLE, fTitle, new Rectangle(PAD + 26, 0, w, HEAD), Color.White, LEFT);
+      var hide = CollapseRect;
+      TextRenderer.DrawText(g, Count(), fSmall, new Rectangle(0, 0, hide.Left - 8, HEAD), MUTED, RIGHT);
+      HoverBg(g, "collapse", hide);
+      g.DrawLine(muted, hide.Left + 6, cy, hide.Right - 6, cy);
+      var menu = MenuRect;
+      HoverBg(g, "menu", menu);
+      int mx = menu.Left + BTN / 2;
+      g.DrawLine(muted, mx - 6, cy - 3, mx + 6, cy - 3);
+      g.DrawLine(muted, mx - 6, cy + 3, mx + 6, cy + 3);
+      using (var b = new SolidBrush(hot == "menu" ? HOVER : BG)) {
+        g.FillEllipse(b, mx + 0.5f, cy - 5, 4, 4); g.DrawEllipse(muted, mx + 0.5f, cy - 5, 4, 4);
+        g.FillEllipse(b, mx - 4.5f, cy + 1, 4, 4); g.DrawEllipse(muted, mx - 4.5f, cy + 1, 4, 4);
+      }
+      g.DrawLine(line, PAD, HEAD, w - PAD, HEAD);
+
+      // sessoes: ponto, pasta, badge, tempo no estado, menu da linha
+      if (rows.Count == 0) TextRenderer.DrawText(g, None, fName, new Rectangle(PAD, RowTop(0), w, ROW), MUTED, LEFT);
+      int timeW = Measure("00:00:00", fSmall);
+      for (int i = 0; i < rows.Count; i++) {
+        var r = rows[i];
+        var color = COLORS[r.State];
+        int top = RowTop(i), mid = top + ROW / 2;
+        var dots = RowMenuRect(i);
+        int timeX = dots.Left - 6 - timeW, badgeW = BadgeWidth(r), badgeX = timeX - 12 - badgeW;
+        using (var b = new SolidBrush(Mix(color, BG, 0.45))) g.FillEllipse(b, PAD + 1, mid - 3, 6, 6);
+        TextRenderer.DrawText(g, Folder(r), fName, new Rectangle(PAD + 16, top, badgeX - PAD - 16 - 12, ROW), TEXT, LEFT);
+        var badge = new Rectangle(badgeX, mid - BADGE / 2, badgeW, BADGE);
+        Fill(g, Mix(color, BG, 0.16), badge, 6);
+        TextRenderer.DrawText(g, T[r.State][0], fBadge, badge, color, TextFormatFlags.NoPadding | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        TextRenderer.DrawText(g, Elapsed(r), fSmall, new Rectangle(timeX, top, timeW, ROW), MUTED, RIGHT);
+        HoverBg(g, "row" + i, dots);
+        using (var b = new SolidBrush(MUTED)) for (int k = -1; k <= 1; k++) g.FillEllipse(b, dots.Left + BTN / 2 + k * 5 - 1.5f, mid - 1.5f, 3, 3);
+      }
+
+      // rodape: resumo + ultima atualizacao
+      int foot = FootTop;
+      g.DrawLine(line, PAD, foot, w - PAD, foot);
+      TextRenderer.DrawText(g, Summary(), fSmall, new Rectangle(PAD, foot, w, FOOT), MUTED, LEFT);
+      TextRenderer.DrawText(g, Updated(), fSmall, new Rectangle(0, foot, w - PAD, FOOT), ACCENT, RIGHT);
     }
   }
 
@@ -278,12 +530,14 @@ class TrafficLight : Form {
 
   static object Get(IDictionary<string, object> d, string k) { object v; return d != null && d.TryGetValue(k, out v) ? v : null; }
 
+  static bool IsOurHook(object h) {
+    var d = h as Dictionary<string, object>;
+    return Str(d, "type") == "http" && OUR_URL.IsMatch(Str(d, "url") ?? "");
+  }
+
   static bool IsOurs(object block) {
     var hooks = Get(block as Dictionary<string, object>, "hooks") as ArrayList;
-    return hooks != null && hooks.Cast<object>().Any(h => {
-      var d = h as Dictionary<string, object>;
-      return Str(d, "type") == "http" && OUR_URL.IsMatch(Str(d, "url") ?? "");
-    });
+    return hooks != null && hooks.Cast<object>().Any(IsOurHook);
   }
 
   // null = settings.json invalido
@@ -320,11 +574,58 @@ class TrafficLight : Form {
       block["hooks"] = new ArrayList { new Dictionary<string, object> { { "type", "http" }, { "url", "http://127.0.0.1:" + PORT }, { "timeout", 2 } } };
       list.Add(block);
     }
+    SaveSettings(cfg);
+  }
+
+  static void SaveSettings(Dictionary<string, object> cfg) {
     Directory.CreateDirectory(Path.GetDirectoryName(SETTINGS));
     if (File.Exists(SETTINGS)) File.Copy(SETTINGS, SETTINGS + ".bak", true); // nunca perde a config do usuario
     var sb = new StringBuilder();
     WriteJson(sb, cfg, "");
     File.WriteAllText(SETTINGS, sb.Append('\n').ToString(), new UTF8Encoding(false));
+  }
+
+  // tira so os nossos hooks: hook de outra ferramenta no mesmo bloco fica; bloco/evento vazio sai
+  static int RemoveHooks(Dictionary<string, object> cfg) {
+    var hooks = Get(cfg, "hooks") as Dictionary<string, object>;
+    if (hooks == null) return 0;
+    int removed = 0;
+    foreach (var ev in hooks.Keys.ToList()) {
+      var list = hooks[ev] as ArrayList;
+      if (list == null) continue;
+      for (int i = list.Count - 1; i >= 0; i--) {
+        var inner = Get(list[i] as Dictionary<string, object>, "hooks") as ArrayList;
+        if (inner == null) continue;
+        int before = inner.Count;
+        for (int j = inner.Count - 1; j >= 0; j--) if (IsOurHook(inner[j])) inner.RemoveAt(j);
+        removed += before - inner.Count;
+        if (before > 0 && inner.Count == 0) list.RemoveAt(i);
+      }
+      if (list.Count == 0) hooks.Remove(ev);
+    }
+    if (hooks.Count == 0) cfg.Remove("hooks");
+    return removed;
+  }
+
+  void Uninstall() {
+    var title = "Traffic Light";
+    if (MessageBox.Show(L("Remove the traffic light hooks from " + SETTINGS + "?\n\nOther hooks are kept (backup: settings.json.bak). The traffic light will close.",
+        "Remover os hooks do semáforo de " + SETTINGS + "?\n\nOs outros hooks continuam (backup: settings.json.bak). O semáforo vai fechar."),
+        title, MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+    int removed;
+    try {
+      var cfg = ReadSettings();
+      removed = RemoveHooks(cfg);
+      if (removed > 0) SaveSettings(cfg);
+    } catch (Exception e) { MessageBox.Show(e.Message, title, MessageBoxButtons.OK, MessageBoxIcon.Error); return; }
+    uninstalled = true;
+    try { Microsoft.Win32.Registry.CurrentUser.DeleteSubKeyTree(REG, false); } catch { } // posicao, idioma, recolhido
+    MessageBox.Show(removed > 0
+      ? L("Removed " + removed + " hooks. Restart open Claude Code sessions.\n\nTo finish, delete traffic_light.exe. To use it again, just open it and accept the install.",
+          removed + " hooks removidos. Reinicie as sessões abertas do Claude Code.\n\nPara terminar, apague o traffic_light.exe. Para usar de novo, é só abrir e aceitar a instalação.")
+      : L("No traffic light hooks found in " + SETTINGS + ".", "Nenhum hook do semáforo em " + SETTINGS + "."),
+      title, MessageBoxButtons.OK, MessageBoxIcon.Information);
+    Close();
   }
 
   // quiet = ao abrir o app: so fala alguma coisa se tiver problema
@@ -399,8 +700,21 @@ class TrafficLight : Form {
     sb.Append('"');
   }
 
+  class DarkMenu : ProfessionalColorTable {
+    public override Color ToolStripDropDownBackground { get { return HOVER; } }
+    public override Color ImageMarginGradientBegin { get { return HOVER; } }
+    public override Color ImageMarginGradientMiddle { get { return HOVER; } }
+    public override Color ImageMarginGradientEnd { get { return HOVER; } }
+    public override Color MenuBorder { get { return BORDER; } }
+    public override Color MenuItemBorder { get { return LINE; } }
+    public override Color MenuItemSelected { get { return Color.FromArgb(0x33, 0x34, 0x3a); } }
+    public override Color SeparatorDark { get { return LINE; } }
+  }
+
   protected override void OnFormClosed(FormClosedEventArgs e) {
+    if (!uninstalled) SavePosition();
     tray.Visible = false;
+    Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplayChanged;
     listener.Stop();
     base.OnFormClosed(e);
   }
@@ -408,7 +722,7 @@ class TrafficLight : Form {
   [STAThread]
   static void Main(string[] args) {
     Application.EnableVisualStyles();
-    var app = new TrafficLight(args.Contains("--ptbr"));
+    var app = new TrafficLight(SavedLanguage() ?? args.Contains("--ptbr"));
     try { app.listener.Start(); } catch (SocketException) {
       MessageBox.Show(app.L("Port " + PORT + " is already in use: another traffic light (exe or traffic_light.js) is probably running.",
         "A porta " + PORT + " ja esta em uso: provavelmente outro semaforo (exe ou traffic_light.js) esta rodando."), "Traffic Light", MessageBoxButtons.OK, MessageBoxIcon.Warning);
