@@ -33,11 +33,11 @@ What both do the same:
 
 ## Windows app (`traffic_light.exe`)
 
-Double-click it. You can copy just the `.exe` to any folder or Windows machine (it uses .NET Framework 4, which ships with Windows 10/11).
+Download `traffic_light.exe` from the [latest release](https://github.com/PauloAbrahao/Traffic-Light/releases/latest) and double-click it. You can copy just the `.exe` to any folder or Windows machine (it uses .NET Framework 4, which ships with Windows 10/11).
 
 - **Hook installation:** on startup it checks `~/.claude/settings.json`. If any hook is missing, it shows what's missing and asks to install it (without removing your hooks; it backs up to `settings.json.bak`). Afterwards, restart any open Claude Code sessions.
 - **Tray icon:** color of whoever needs you most (yellow > red > green; gray = no sessions). Hover to see the summary.
-- **Widget:** always on top. Starts in the bottom-right corner; drag to move and it remembers the spot. `···` copies the path or removes the row, `–` collapses it to a small bar with one colored dot per session (hover for the list, `⌄` expands it again), the sliders icon opens the menu (also where you switch between English and Português; the choice is saved and overrides `--ptbr`).
+- **Widget:** always on top. Starts in the bottom-right corner; drag to move and it remembers the spot. `···` copies the path or removes the row, `–` collapses it to a small bar with one colored dot per session (rest the mouse on a dot for 1.5s to see that session; `⌄` expands it again), the sliders icon opens the menu (also where you switch between English and Português; the choice is saved and overrides `--ptbr`).
 - **Menu** (right-click the icon or the widget): show/hide widget, **verify installation**, **uninstall**, language, exit.
 - **Uninstall:** removes only the traffic light hooks from `~/.claude/settings.json` (your other hooks stay; backup in `settings.json.bak`), clears its saved settings (position, language, collapsed) and closes. Then delete `traffic_light.exe`. A single click on the icon shows/hides the widget.
 
@@ -90,3 +90,11 @@ C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /nologo /target:winexe /
 <img width="1117" height="629" alt="idle" src="https://github.com/user-attachments/assets/6c068328-5fcc-4382-99f3-e043c6e3c1ab" /> </br>
 <img width="1112" height="631" alt="waiting" src="https://github.com/user-attachments/assets/c8585483-b9aa-40d1-a23c-af90b365ce33" /> </br>
 
+## Releasing
+
+Push a version tag and GitHub Actions builds `traffic_light.exe` on Windows and attaches it to a new release:
+
+```
+git tag v1.0.0
+git push origin v1.0.0
+```
