@@ -1,6 +1,6 @@
-// traffic_light.exe: semaforo do Claude Code autossuficiente (sem node). Icone na bandeja + widget flutuante.
+// traffic_light.exe: semaforo do Claude Code autossuficiente. Icone na bandeja + widget flutuante.
 //   traffic_light.exe [--ptbr]   (o idioma escolhido no menu fica salvo e vale sobre a flag)
-// Recebe os hooks HTTP em 127.0.0.1:4545 (mesma logica do traffic_light.js), confere os hooks no
+// Recebe os hooks HTTP em 127.0.0.1:4545, confere os hooks no
 // ~/.claude/settings.json ao abrir e oferece instalar o que faltar.
 // Gerar: C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /nologo /target:winexe /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Web.Extensions.dll /out:traffic_light.exe traffic_light.cs
 using System;
@@ -786,8 +786,8 @@ class TrafficLight : Form {
     Application.EnableVisualStyles();
     var app = new TrafficLight(SavedLanguage() ?? args.Contains("--ptbr"));
     try { app.listener.Start(); } catch (SocketException) {
-      MessageBox.Show(app.L("Port " + PORT + " is already in use: another traffic light (exe or traffic_light.js) is probably running.",
-        "A porta " + PORT + " ja esta em uso: provavelmente outro semaforo (exe ou traffic_light.js) esta rodando."), "Traffic Light", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+      MessageBox.Show(app.L("Port " + PORT + " is already in use: another traffic light is probably running.",
+        "A porta " + PORT + " ja esta em uso: provavelmente outro semaforo esta rodando."), "Traffic Light", MessageBoxButtons.OK, MessageBoxIcon.Warning);
       return;
     }
     Application.Run(app);
