@@ -84,12 +84,10 @@ C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /nologo /target:winexe /
 ## Screenshots
 
 **Windows widget**
-<img width="1920" height="1080" alt="Animação" src="https://github.com/user-attachments/assets/2b5b4196-d042-485e-bb0f-4eedcd5da78a" />
+<img width="1920" height="1080" alt="Animação" src="https://github.com/user-attachments/assets/2b5b4196-d042-485e-bb0f-4eedcd5da78a" /> </br>
+<img width="386" height="171" alt="idle" src="https://github.com/user-attachments/assets/122f70d1-b783-4efc-b65b-9b1fca36e4f4" /></br>
+<img width="561" height="228" alt="configs" src="https://github.com/user-attachments/assets/59ffc831-4a34-4f70-9b9d-7cab66d1acc2" /></br>
 
-----
-
-## Demo - Old Version
-<img width="600" height="400" alt="waiting" src="https://github.com/user-attachments/assets/c8585483-b9aa-40d1-a23c-af90b365ce33" /> </br>
 
 ## Releasing
 
